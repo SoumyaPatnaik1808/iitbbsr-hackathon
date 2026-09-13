@@ -6,7 +6,12 @@ const { verifyAuth } = require('./middleware/auth');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+// Explicit CORS configuration to prevent any deployment issues
+app.use(cors({
+  origin: '*', // Allows requests from any frontend URL (Vercel, Netlify, localhost)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Public route
