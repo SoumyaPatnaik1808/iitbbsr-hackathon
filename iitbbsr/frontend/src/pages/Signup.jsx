@@ -73,17 +73,22 @@ function Signup() {
         if (!response.ok) {
           const errData = await response.json();
           console.error("Backend init error:", errData);
-        } else {
-          alert('Account created and initialized successfully!');
         }
+        
+        // Navigate directly to dashboard
+        navigate('/dashboard');
       } catch (err) {
         console.error("Failed to reach backend:", err);
       }
     } else {
-      alert('Signup successful! Please check your email to verify your account before logging in.');
+      // If session is null, Supabase still requires email confirmation.
+      // We will tell them to turn it off, but fallback gracefully if they didn't.
+      alert('Signup successful! (Note: If you want instant login, please disable "Confirm email" in your Supabase Auth settings).');
+      navigate('/login');
     }
 
     setLoading(false);
+  };
 
 
   return (

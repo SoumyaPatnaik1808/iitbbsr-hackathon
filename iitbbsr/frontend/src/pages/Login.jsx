@@ -27,8 +27,7 @@ function Login() {
     if (error) {
       alert(error.message);
     } else {
-      alert('Logged in successfully!');
-      // Navigate to dashboard here in future
+      navigate('/dashboard');
     }
     setLoading(false);
   };
