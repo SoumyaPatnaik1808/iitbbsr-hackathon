@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../AuthContext';
 import { supabase } from '../supabaseClient';
-import { Bell, Brain, Dumbbell, ShieldCheck, Target, Play, Pause, RotateCcw, CheckSquare, Square, Plus } from 'lucide-react';
+import { Bell, Brain, Dumbbell, ShieldCheck, Target, Play, Pause, RotateCcw, CheckSquare, Square, Plus, Trash2, Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 // Anti-cheat verification function hitting the backend
 async function completeTaskServerSide(taskId, accessToken) {
-  const res = await fetch(`http://localhost:5000/api/tasks/${taskId}/complete`, {
+  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const res = await fetch(`${apiUrl}/api/tasks/${taskId}/complete`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${accessToken}`,
@@ -25,10 +27,43 @@ export default function Dashboard() {
   const [attributes, setAttributes] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskAttr, setNewTaskAttr] = useState('Focus');
+  const [newTaskDuration, setNewTaskDuration] = useState(25 * 60);
   
   // Active timer state for the UI
   const [activeTask, setActiveTask] = useState(null);
   const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  useEffect(() => {
+    const delayDebounceFn = setTimeout(async () => {
+      if (searchQuery.trim()) {
+        setIsSearching(true);
+        try {
+          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+          const response = await fetch(`${apiUrl}/api/users/search?q=${encodeURIComponent(searchQuery)}`, {
+            headers: {
+              'Authorization': `Bearer ${session?.access_token}`
+            }
+          });
+          const data = await response.json();
+          setSearchResults(data || []);
+        } catch (error) {
+          console.error("Search error:", error);
+          setSearchResults([]);
+        }
+        setIsSearching(false);
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery]);
 
   // Load Initial Data
   useEffect(() => {
@@ -123,6 +158,10 @@ export default function Dashboard() {
   }, [tasks]);
 
   const handleStartTask = async (taskId) => {
+    if (tasks.some(t => t.status === 'in_progress')) {
+      alert("You already have an active quest. Complete or abandon it first.");
+      return;
+    }
     const { error } = await supabase.from('tasks').update({ 
       status: 'in_progress', 
       timer_started_at: new Date().toISOString() 
@@ -132,6 +171,38 @@ export default function Dashboard() {
       alert("Error starting task: " + error.message);
     } else {
       fetchDashboardData();
+    }
+  };
+
+  const handleCancelTask = async (taskId) => {
+    if (!confirm("Are you sure you want to abandon this quest? Progress will be lost.")) return;
+    const { error } = await supabase.from('tasks').update({ 
+      status: 'pending', 
+      timer_started_at: null 
+    }).eq('id', taskId);
+    
+    if (error) {
+      alert("Error cancelling task: " + error.message);
+    } else {
+      fetchDashboardData();
+    }
+  };
+
+  const handleDeleteTask = async (taskId) => {
+    if (!confirm("Are you sure you want to delete this quest? (Costs 1 XP)")) return;
+    
+    try {
+      const { error: delError } = await supabase.from('tasks').delete().eq('id', taskId);
+      if (delError) throw delError;
+
+      // Reduce XP by 1 (preventing it from dropping below 0)
+      const newXp = Math.max(0, profile.total_xp - 1);
+      const { error: xpError } = await supabase.from('users').update({ total_xp: newXp }).eq('id', session.user.id);
+      if (xpError) throw xpError;
+
+      fetchDashboardData();
+    } catch (err) {
+      alert("Error deleting task: " + (err.message || "Unknown error"));
     }
   };
 
@@ -157,20 +228,31 @@ export default function Dashboard() {
 
   const handleAddTask = async (e) => {
     e.preventDefault();
-    if (!newTaskTitle) return;
-    const { error } = await supabase.from('tasks').insert({
-      user_id: session.user.id,
-      title: newTaskTitle,
-      attribute_type: 'Focus', // Defaulting for now, could be a dropdown
-      timer_duration: 25 * 60, // 25 mins default
-      status: 'pending'
-    });
-    
-    if (error) {
-      alert("Error adding task: " + error.message);
-    } else {
-      setNewTaskTitle('');
-      fetchDashboardData();
+    if (!newTaskTitle.trim()) {
+      alert("Please enter a quest title.");
+      return;
+    }
+    try {
+      console.log("Adding task:", { title: newTaskTitle, attr: newTaskAttr, dur: newTaskDuration });
+      const { data, error } = await supabase.from('tasks').insert({
+        user_id: session.user.id,
+        title: newTaskTitle.trim(),
+        attribute_type: newTaskAttr,
+        timer_duration: newTaskDuration,
+        status: 'pending'
+      }).select();
+      
+      console.log("Insert response:", { data, error });
+      
+      if (error) {
+        alert("Error adding task: " + error.message);
+      } else {
+        setNewTaskTitle('');
+        fetchDashboardData();
+      }
+    } catch (err) {
+      console.error("Exception in handleAddTask:", err);
+      alert("Unexpected error: " + err.message);
     }
   };
 
@@ -216,10 +298,47 @@ export default function Dashboard() {
             <span className="font-bold text-xl tracking-tight">Quest Up</span>
           </div>
           <div className="hidden md:flex space-x-2 text-sm font-medium">
-            <a href="#" className="bg-white/10 px-4 py-1.5 rounded-full text-white">Dashboard</a>
-            <a href="#" className="text-gray-400 hover:text-white px-4 py-1.5 transition-colors">Quests</a>
-            <a href="#" className="text-gray-400 hover:text-white px-4 py-1.5 transition-colors">Stats</a>
-            <a href="#" className="text-gray-400 hover:text-white px-4 py-1.5 transition-colors">Profile</a>
+            <Link to="/dashboard" className="bg-white/10 px-4 py-1.5 rounded-full text-white">Dashboard</Link>
+            <div className="relative flex items-center">
+              <div className="flex items-center bg-white/5 border border-white/10 rounded-full px-3 py-1.5 ml-2">
+                <Search size={14} className="text-gray-400 mr-2" />
+                <input 
+                  type="text" 
+                  placeholder="Search users..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="bg-transparent text-sm text-white placeholder:text-gray-500 focus:outline-none w-32 md:w-48 transition-all"
+                />
+              </div>
+              
+              {/* Search Results Dropdown */}
+              {searchQuery.trim() && (
+                <div className="absolute top-full left-0 mt-2 w-full bg-[#121b24] border border-white/10 rounded-xl shadow-xl overflow-hidden z-50">
+                  {isSearching ? (
+                    <div className="p-3 text-xs text-gray-500 text-center">Searching...</div>
+                  ) : searchResults.length > 0 ? (
+                    <div className="flex flex-col">
+                      {searchResults.map(u => (
+                        <div key={u.id} className="flex items-center gap-3 p-3 hover:bg-white/5 transition-colors cursor-pointer border-b border-white/5 last:border-0">
+                          <img src={u.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.username}`} alt={u.username} className="w-8 h-8 rounded-full object-cover" />
+                          <div className="flex flex-col">
+                            <span className="text-sm font-bold leading-none">{u.display_name}</span>
+                            <span className="text-xs text-primary mt-1">@{u.username} • Lvl {u.level}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-3 text-xs text-gray-500 text-center">No users found</div>
+                  )}
+                </div>
+              )}
+            </div>
+            <a href="#" onClick={(e) => e.preventDefault()} className="text-gray-500 cursor-not-allowed px-4 py-1.5 flex items-center gap-2 transition-colors">
+              Stats 
+              <span className="bg-primary/20 text-primary text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border border-primary/20">Coming Soon</span>
+            </a>
+            <Link to="/profile" className="text-gray-400 hover:text-white px-4 py-1.5 transition-colors">Profile</Link>
           </div>
         </div>
 
@@ -323,6 +442,26 @@ export default function Dashboard() {
                 onChange={e=>setNewTaskTitle(e.target.value)}
                 className="flex-grow bg-transparent text-sm text-white placeholder:text-gray-500 focus:outline-none"
               />
+              <select 
+                value={newTaskAttr} 
+                onChange={e=>setNewTaskAttr(e.target.value)}
+                className="bg-[#0b1219] text-xs text-gray-300 border border-white/10 rounded px-2 py-1.5 focus:outline-none"
+              >
+                <option value="Focus">Focus</option>
+                <option value="Intellect">Intellect</option>
+                <option value="Strength">Strength</option>
+                <option value="Discipline">Discipline</option>
+              </select>
+              <select 
+                value={newTaskDuration} 
+                onChange={e=>setNewTaskDuration(Number(e.target.value))}
+                className="bg-[#0b1219] text-xs text-gray-300 border border-white/10 rounded px-2 py-1.5 focus:outline-none"
+              >
+                <option value={1500}>25m</option>
+                <option value={2700}>45m</option>
+                <option value={300}>5m break</option>
+                <option value={60}>1m test</option>
+              </select>
               <button type="submit" className="bg-white/10 hover:bg-white/20 text-xs px-4 py-1.5 rounded-lg transition-colors border border-white/5 text-gray-300">
                 Add Quest
               </button>
@@ -368,26 +507,35 @@ export default function Dashboard() {
                         <div className="text-xs mt-1 flex items-center gap-2">
                           <span className={`${isCompleted ? 'text-gray-600' : 'text-primary'}`}>{task.attribute_type}</span>
                           <span className="text-gray-600">•</span>
-                          <span className="text-gray-400">+{Math.max(10, Math.floor(task.timer_duration/60)*10)} XP</span>
+                          <span className="text-gray-400">+{Math.max(1, Math.round((task.timer_duration/60) * 0.5))} XP</span>
                           <span className="text-gray-600">•</span>
                           <span className={canCheck && !isCompleted ? 'text-green-400 font-bold' : 'text-gray-500'}>{timeLeftText}</span>
                         </div>
                       </div>
                     </div>
                     
-                    {!isCompleted && !isRunning && (
-                      <button onClick={() => handleStartTask(task.id)} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-gray-400 border border-white/5">
-                        <Play size={14} />
+                    <div className="flex items-center gap-2">
+                      {!isCompleted && !isRunning && (
+                        <button onClick={() => handleStartTask(task.id)} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-gray-400 border border-white/5">
+                          <Play size={14} />
+                        </button>
+                      )}
+                      {isRunning && !canCheck && (
+                        <div className="bg-primary/20 text-primary text-xs px-3 py-1.5 rounded-lg font-bold border border-primary/30">
+                          Running
+                        </div>
+                      )}
+                      {isCompleted && (
+                        <span className="text-green-400 text-xs font-mono font-bold">+{Math.max(1, Math.round((task.timer_duration/60) * 0.5))} XP</span>
+                      )}
+                      <button 
+                        onClick={() => handleDeleteTask(task.id)} 
+                        className="w-8 h-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 flex items-center justify-center text-red-400 border border-red-500/20 transition-colors ml-1"
+                        title="Delete Quest"
+                      >
+                        <Trash2 size={14} />
                       </button>
-                    )}
-                    {isRunning && !canCheck && (
-                      <div className="bg-primary/20 text-primary text-xs px-3 py-1.5 rounded-lg font-bold border border-primary/30">
-                        Running
-                      </div>
-                    )}
-                    {isCompleted && (
-                      <span className="text-green-400 text-xs font-mono font-bold">+{Math.max(10, Math.floor(task.timer_duration/60)*10)} XP</span>
-                    )}
+                    </div>
                   </div>
                 )
               })}
@@ -416,21 +564,14 @@ export default function Dashboard() {
                 </span>
               </div>
               
-              <div className="flex items-center gap-3 w-full">
-                <button className="flex-grow bg-primary hover:bg-primary/90 text-black font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">
-                  <Pause size={16} fill="black" /> Pause
+              <div className="flex items-center gap-3 w-full mt-4">
+                <button 
+                  disabled={!activeTask}
+                  onClick={() => activeTask && handleCancelTask(activeTask.id)}
+                  className="flex-grow bg-red-500/20 hover:bg-red-500/30 text-red-500 font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors border border-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RotateCcw size={16} /> Abandon Quest
                 </button>
-                <button className="w-12 h-12 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-gray-400 border border-white/10 transition-colors">
-                  <RotateCcw size={16} />
-                </button>
-              </div>
-
-              <div className="flex gap-2 mt-6 w-full justify-between">
-                {['25m', '45m', '5m Break'].map(label => (
-                  <button key={label} className="flex-1 bg-transparent hover:bg-white/5 border border-white/10 text-gray-400 text-xs py-2 rounded-lg transition-colors">
-                    {label}
-                  </button>
-                ))}
               </div>
             </div>
           </div>
