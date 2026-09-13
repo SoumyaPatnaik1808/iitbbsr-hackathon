@@ -57,7 +57,8 @@ function Signup() {
     // The backend route will need the JWT to verify identity
     if (authData.session) {
       try {
-        const response = await fetch('http://localhost:5000/api/users/init', {
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+        const response = await fetch(`${apiUrl}/api/users/init`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -87,10 +88,7 @@ function Signup() {
 
   const handleGoogleSignup = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${window.location.origin}/dashboard`
-      }
+      provider: 'google'
     });
     if (error) {
       alert(error.message);
