@@ -19,6 +19,53 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running' });
 });
 
+// Demo Login Route for Hackathon Bypass
+app.get('/api/demo-login', async (req, res) => {
+  const jwt = require('jsonwebtoken');
+  const demoUserId = '11111111-1111-1111-1111-111111111111';
+  const token = jwt.sign({
+    sub: demoUserId,
+    role: 'authenticated',
+    aud: 'authenticated'
+  }, process.env.SUPABASE_JWT_SECRET, { expiresIn: '7d' });
+  
+  // Auto-initialize the demo user row in the database so the dashboard doesn't crash
+  const { createClient } = require('@supabase/supabase-js');
+  const userSupabase = createClient(
+    process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY,
+    { global: { headers: { Authorization: `Bearer ${token}` } } }
+  );
+
+  await userSupabase.from('users').upsert([{
+    id: demoUserId,
+    username: 'demo_user',
+    display_name: 'Demo Adventurer',
+    level: 1,
+    total_xp: 0
+  }], { onConflict: 'id' });
+
+  // Initialize attributes for demo user if they don't exist
+  const attrs = ['Strength', 'Focus', 'Intellect', 'Discipline'];
+  for (const attr of attrs) {
+    await userSupabase.from('attributes').upsert([{
+      user_id: demoUserId,
+      attribute_name: attr,
+      level: 1,
+      attribute_xp: 0
+    }], { onConflict: 'user_id, attribute_name' });
+  }
+  
+  res.json({
+    access_token: token,
+    user: {
+      id: demoUserId,
+      email: 'demo@questup.com',
+      user_metadata: { display_name: 'Demo Adventurer' }
+    }
+  });
+});
+
 // Initialize user profile after Supabase auth
 app.post('/api/users/init', verifyAuth, async (req, res) => {
   const { username, display_name } = req.body;

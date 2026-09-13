@@ -12,6 +12,32 @@ function LandingPage() {
     }
   }, [session, navigate]);
 
+  const [isLoading, setIsLoading] = React.useState(false);
+
+  const handleDemoLogin = async () => {
+    setIsLoading(true);
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${apiUrl}/api/demo-login`);
+      const data = await response.json();
+      
+      if (data.access_token) {
+        const { supabase } = await import('../supabaseClient');
+        await supabase.auth.setSession({
+          access_token: data.access_token,
+          refresh_token: '' // Fake refresh token to force session creation locally
+        });
+        navigate('/dashboard');
+      } else {
+        alert("Failed to initialize demo login.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error bypassing auth: " + err.message);
+    }
+    setIsLoading(false);
+  };
+
   return (
     <div className="min-h-screen bg-background text-white font-sans flex flex-col items-center">
       
@@ -35,12 +61,7 @@ function LandingPage() {
           <button className="text-gray-400 hover:text-white transition-colors">
            
           </button>
-          <Link to="/login" className="px-5 py-2 text-sm font-medium rounded-md border border-white/10 hover:bg-white/5 transition-colors">
-            Sign In
-          </Link>
-           <Link to="/signup" className="px-5 py-2 text-sm font-medium rounded-md bg-primary text-black hover:bg-primary/90 transition-colors">
-            Register
-          </Link>
+
         </div>
       </nav>
 
@@ -61,8 +82,12 @@ function LandingPage() {
 
         {/* CTA Buttons */}
         <div className="flex flex-col sm:flex-row items-center gap-4 mb-24">
-          <button className="px-8 py-3 bg-primary text-black font-semibold rounded-md flex items-center gap-2 hover:bg-primary/90 transition-colors">
-            Enter your Quest <span className="ml-1">→</span>
+          <button 
+            onClick={handleDemoLogin}
+            disabled={isLoading}
+            className="px-8 py-3 bg-primary text-black font-semibold rounded-md flex items-center gap-2 hover:bg-primary/90 transition-colors"
+          >
+            {isLoading ? 'Entering...' : 'Go to Dashboard'} <span className="ml-1">→</span>
           </button>
           
         </div>
