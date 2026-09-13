@@ -1,215 +1,109 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../AuthContext';
-import { supabase } from '../supabaseClient';
-import { Bell, Brain, Dumbbell, ShieldCheck, Target, Play, Pause, RotateCcw, CheckSquare, Square, Plus, Trash2, Search } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Bell, Brain, Dumbbell, ShieldCheck, Target, Play, Pause, RotateCcw, CheckSquare, Square, Plus, Trash2, User } from 'lucide-react';
 
-// Anti-cheat verification function hitting the backend
-async function completeTaskServerSide(taskId, accessToken) {
-  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-  const res = await fetch(`${apiUrl}/api/tasks/${taskId}/complete`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    }
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to complete task');
-  }
-  return await res.json();
-}
+const INITIAL_ATTRIBUTES = [
+  { attribute_name: 'Strength', level: 1, attribute_xp: 0 },
+  { attribute_name: 'Focus', level: 1, attribute_xp: 0 },
+  { attribute_name: 'Intellect', level: 1, attribute_xp: 0 },
+  { attribute_name: 'Discipline', level: 1, attribute_xp: 0 }
+];
 
 export default function Dashboard() {
-  const { session } = useAuth();
-  const [profile, setProfile] = useState(null);
-  const [attributes, setAttributes] = useState([]);
-  const [tasks, setTasks] = useState([]);
+  // LocalStorage State
+  const [profile, setProfile] = useState(() => JSON.parse(localStorage.getItem('questup_profile')) || null);
+  const [attributes, setAttributes] = useState(() => JSON.parse(localStorage.getItem('questup_attributes')) || INITIAL_ATTRIBUTES);
+  const [tasks, setTasks] = useState(() => JSON.parse(localStorage.getItem('questup_tasks')) || []);
+
+  // Form State
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskAttr, setNewTaskAttr] = useState('Focus');
   const [newTaskDuration, setNewTaskDuration] = useState(25 * 60);
-  
-  // Active timer state for the UI
+
+  // Identity Modal State
+  const [identityName, setIdentityName] = useState('');
+  const [identityUsername, setIdentityUsername] = useState('');
+
+  // Timer State
   const [activeTask, setActiveTask] = useState(null);
   const [remainingSeconds, setRemainingSeconds] = useState(0);
 
-  // Search state
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
+  // Sync to LocalStorage
+  useEffect(() => { if (profile) localStorage.setItem('questup_profile', JSON.stringify(profile)); }, [profile]);
+  useEffect(() => { localStorage.setItem('questup_attributes', JSON.stringify(attributes)); }, [attributes]);
+  useEffect(() => { localStorage.setItem('questup_tasks', JSON.stringify(tasks)); }, [tasks]);
 
+  // Timer Effect
   useEffect(() => {
-    const delayDebounceFn = setTimeout(async () => {
-      if (searchQuery.trim()) {
-        setIsSearching(true);
-        try {
-          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-          const response = await fetch(`${apiUrl}/api/users/search?q=${encodeURIComponent(searchQuery)}`, {
-            headers: {
-              'Authorization': `Bearer ${session?.access_token}`
-            }
-          });
-          const data = await response.json();
-          setSearchResults(data || []);
-        } catch (error) {
-          console.error("Search error:", error);
-          setSearchResults([]);
-        }
-        setIsSearching(false);
-      } else {
-        setSearchResults([]);
-      }
-    }, 300);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery]);
-
-  // Load Initial Data
-  useEffect(() => {
-    fetchDashboardData();
-
-    // Subscribe to realtime changes for cross-device sync
-    const channels = supabase.channel('custom-all-channel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks', filter: `user_id=eq.${session.user.id}` }, payload => {
-        fetchDashboardData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'attributes', filter: `user_id=eq.${session.user.id}` }, payload => {
-        fetchDashboardData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `id=eq.${session.user.id}` }, payload => {
-        fetchDashboardData();
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channels); };
-  }, [session.user.id]);
-
-  const [errorMsg, setErrorMsg] = useState(null);
-
-  const fetchDashboardData = async () => {
-    try {
-      // 1. Fetch Profile
-      let { data: userData, error: userError } = await supabase.from('users').select('*').eq('id', session.user.id).single();
-      
-      // If user profile doesn't exist (e.g. Google OAuth or backend init failed), create it
-      if (userError && userError.code === 'PGRST116') {
-        const { data: newUserData, error: insertError } = await supabase.from('users').upsert({
-          id: session.user.id,
-          username: session.user.user_metadata?.username || session.user.email.split('@')[0],
-          display_name: session.user.user_metadata?.full_name || session.user.user_metadata?.display_name || 'Adventurer',
-          level: 1,
-          total_xp: 0,
-          points: 0
-        }, { onConflict: 'id' }).select().single();
-        
-        if (!insertError) {
-          userData = newUserData;
-        } else {
-          console.error("Failed to create profile:", insertError);
-          setErrorMsg(`Failed to create profile: ${insertError.message}`);
-          return;
-        }
-      } else if (userError) {
-        console.error("Error fetching profile:", userError);
-        setErrorMsg(`Database error: ${userError.message || userError.details || userError.code}. Did you run the schema.sql in Supabase?`);
-        return;
-      }
-      
-      if (userData) {
-        setProfile(userData);
-      } else {
-        setErrorMsg("Profile data is still null after creation attempt.");
-        return;
-      }
-
-    // 2. Fetch Attributes
-    const { data: attrsData } = await supabase.from('attributes').select('*').eq('user_id', session.user.id);
-    if (attrsData) setAttributes(attrsData);
-
-    // 3. Fetch Tasks
-    const { data: tasksData } = await supabase.from('tasks').select('*').eq('user_id', session.user.id).order('created_at', { ascending: false });
-    if (tasksData) setTasks(tasksData);
-    
-    } catch (err) {
-      console.error("Dashboard fetch error:", err);
-      setErrorMsg(err.message);
+    const running = tasks.find(t => t.status === 'in_progress');
+    if (!running) {
+      setActiveTask(null);
+      setRemainingSeconds(0);
+      return;
     }
-  };
 
-  // Timer Tick Logic
-  useEffect(() => {
+    setActiveTask(running);
     const interval = setInterval(() => {
-      // Find the currently running task (status='in_progress' and has timer_started_at)
-      const running = tasks.find(t => t.status === 'in_progress');
-      if (running) {
-        setActiveTask(running);
-        const started = new Date(running.timer_started_at).getTime();
-        const now = Date.now();
-        const elapsed = Math.floor((now - started) / 1000);
-        const remaining = Math.max(0, running.timer_duration - elapsed);
-        setRemainingSeconds(remaining);
-      } else {
-        setActiveTask(null);
-        setRemainingSeconds(0);
-      }
+      const started = new Date(running.timer_started_at).getTime();
+      const elapsed = Math.floor((Date.now() - started) / 1000);
+      const remaining = Math.max(0, running.timer_duration - elapsed);
+      setRemainingSeconds(remaining);
     }, 1000);
     return () => clearInterval(interval);
   }, [tasks]);
 
-  const handleStartTask = async (taskId) => {
+  // Actions
+  const handleSaveIdentity = (e) => {
+    e.preventDefault();
+    if (!identityName.trim() || !identityUsername.trim()) return;
+    setProfile({
+      display_name: identityName,
+      username: identityUsername,
+      level: 1,
+      total_xp: 0
+    });
+  };
+
+  const handleAddTask = (e) => {
+    e.preventDefault();
+    if (!profile) return; // Prevent adding if no profile
+    if (!newTaskTitle.trim()) {
+      alert("Please enter a quest title.");
+      return;
+    }
+    const newTask = {
+      id: Date.now().toString(),
+      title: newTaskTitle.trim(),
+      attribute_type: newTaskAttr,
+      timer_duration: newTaskDuration,
+      status: 'pending',
+      timer_started_at: null
+    };
+    setTasks([newTask, ...tasks]);
+    setNewTaskTitle('');
+  };
+
+  const handleStartTask = (taskId) => {
     if (tasks.some(t => t.status === 'in_progress')) {
       alert("You already have an active quest. Complete or abandon it first.");
       return;
     }
-    const { error } = await supabase.from('tasks').update({ 
-      status: 'in_progress', 
-      timer_started_at: new Date().toISOString() 
-    }).eq('id', taskId);
-    
-    if (error) {
-      alert("Error starting task: " + error.message);
-    } else {
-      fetchDashboardData();
-    }
+    setTasks(tasks.map(t => t.id === taskId ? { ...t, status: 'in_progress', timer_started_at: new Date().toISOString() } : t));
   };
 
-  const handleCancelTask = async (taskId) => {
+  const handleCancelTask = (taskId) => {
     if (!confirm("Are you sure you want to abandon this quest? Progress will be lost.")) return;
-    const { error } = await supabase.from('tasks').update({ 
-      status: 'pending', 
-      timer_started_at: null 
-    }).eq('id', taskId);
-    
-    if (error) {
-      alert("Error cancelling task: " + error.message);
-    } else {
-      fetchDashboardData();
-    }
+    setTasks(tasks.map(t => t.id === taskId ? { ...t, status: 'pending', timer_started_at: null } : t));
   };
 
-  const handleDeleteTask = async (taskId) => {
+  const handleDeleteTask = (taskId) => {
     if (!confirm("Are you sure you want to delete this quest? (Costs 1 XP)")) return;
-    
-    try {
-      const { error: delError } = await supabase.from('tasks').delete().eq('id', taskId);
-      if (delError) throw delError;
-
-      // Reduce XP by 1 (preventing it from dropping below 0)
-      const newXp = Math.max(0, profile.total_xp - 1);
-      const { error: xpError } = await supabase.from('users').update({ total_xp: newXp }).eq('id', session.user.id);
-      if (xpError) throw xpError;
-
-      fetchDashboardData();
-    } catch (err) {
-      alert("Error deleting task: " + (err.message || "Unknown error"));
-    }
+    setTasks(tasks.filter(t => t.id !== taskId));
+    setProfile(p => ({ ...p, total_xp: Math.max(0, p.total_xp - 1) }));
   };
 
-  const handleCompleteTask = async (task) => {
+  const handleCompleteTask = (task) => {
     if (task.status === 'completed') return;
     
-    // Optimistic UI check (Server will reject if fake)
     const started = new Date(task.timer_started_at).getTime();
     const elapsed = Math.floor((Date.now() - started) / 1000);
     if (elapsed < task.timer_duration) {
@@ -217,365 +111,318 @@ export default function Dashboard() {
       return;
     }
 
-    try {
-      await completeTaskServerSide(task.id, session.access_token);
-      // Fetch new data to reflect XP and level up
-      fetchDashboardData();
-    } catch (err) {
-      alert(err.message);
-    }
-  };
+    // Give XP (1 minute = 0.5XP locally)
+    const gainedXp = Math.round((task.timer_duration / 60) * 0.5);
 
-  const handleAddTask = async (e) => {
-    e.preventDefault();
-    if (!newTaskTitle.trim()) {
-      alert("Please enter a quest title.");
-      return;
-    }
-    try {
-      console.log("Adding task:", { title: newTaskTitle, attr: newTaskAttr, dur: newTaskDuration });
-      const { data, error } = await supabase.from('tasks').insert({
-        user_id: session.user.id,
-        title: newTaskTitle.trim(),
-        attribute_type: newTaskAttr,
-        timer_duration: newTaskDuration,
-        status: 'pending'
-      }).select();
-      
-      console.log("Insert response:", { data, error });
-      
-      if (error) {
-        alert("Error adding task: " + error.message);
-      } else {
-        setNewTaskTitle('');
-        fetchDashboardData();
+    // Update Profile Leveling
+    setProfile(p => {
+      let newXp = p.total_xp + gainedXp;
+      let newLevel = p.level;
+      let threshold = Math.floor(500 * Math.pow(newLevel, 1.5));
+      while (newXp >= threshold) {
+        newXp -= threshold;
+        newLevel += 1;
+        threshold = Math.floor(500 * Math.pow(newLevel, 1.5));
       }
-    } catch (err) {
-      console.error("Exception in handleAddTask:", err);
-      alert("Unexpected error: " + err.message);
+      return { ...p, total_xp: newXp, level: newLevel };
+    });
+
+    // Update Attribute Leveling
+    setAttributes(attrs => attrs.map(a => {
+      if (a.attribute_name !== task.attribute_type) return a;
+      let newXp = a.attribute_xp + gainedXp;
+      let newLevel = a.level;
+      let threshold = Math.floor(100 * Math.pow(newLevel, 1.5));
+      while (newXp >= threshold) {
+        newXp -= threshold;
+        newLevel += 1;
+        threshold = Math.floor(100 * Math.pow(newLevel, 1.5));
+      }
+      return { ...a, attribute_xp: newXp, level: newLevel };
+    }));
+
+    // Mark completed
+    setTasks(tasks.map(t => t.id === task.id ? { ...t, status: 'completed' } : t));
+  };
+
+  // Helpers
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const getAttrIcon = (attr, size=16) => {
+    switch(attr) {
+      case 'Intellect': return <Brain size={size} className="text-blue-400" />;
+      case 'Strength': return <Dumbbell size={size} className="text-red-400" />;
+      case 'Discipline': return <ShieldCheck size={size} className="text-green-400" />;
+      case 'Focus': return <Target size={size} className="text-purple-400" />;
+      default: return <Target size={size} className="text-gray-400" />;
     }
   };
-
-  const formatTime = (totalSeconds) => {
-    const m = Math.floor(totalSeconds / 60);
-    const s = totalSeconds % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  if (errorMsg) {
-    return (
-      <div className="min-h-screen bg-[#0b1219] flex flex-col items-center justify-center text-white p-6 text-center">
-        <div className="bg-red-500/10 border border-red-500/50 p-6 rounded-xl max-w-md">
-          <h2 className="text-xl font-bold text-red-400 mb-2">Error Loading Dashboard</h2>
-          <p className="text-gray-300 text-sm mb-4">{errorMsg}</p>
-          <button onClick={() => window.location.reload()} className="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg text-sm transition-colors">
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!profile) return <div className="min-h-screen bg-[#0b1219] flex items-center justify-center text-white">Loading Registry Data...</div>;
-
-  const xpNeeded = Math.floor(500 * Math.pow(profile.level, 1.5));
-  const progressPercent = Math.min(100, Math.floor((profile.total_xp / xpNeeded) * 100));
 
   return (
-    <div className="min-h-screen bg-[#0b1219] text-white font-sans flex flex-col items-center pb-20">
+    <div className="min-h-screen bg-background text-white font-sans flex flex-col relative pb-24">
       
-      {/* Navbar */}
-      <nav className="w-full px-8 py-4 flex justify-between items-center border-b border-white/5 bg-[#0b1219] sticky top-0 z-50">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded bg-primary/20 flex items-center justify-center">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M14.5 9.5L19.5 4.5" stroke="#4db8ff" strokeWidth="2" strokeLinecap="round"/>
-                <path d="M9.5 14.5L4.5 19.5" stroke="#4db8ff" strokeWidth="2" strokeLinecap="round"/>
-                <path d="M12 2L15 5L19 5L19 9L22 12L19 15L19 19L15 19L12 22L9 19L5 19L5 15L2 12L5 9L5 5L9 5L12 2Z" stroke="#4db8ff" strokeWidth="2" strokeLinejoin="round"/>
-              </svg>
-            </div>
-            <span className="font-bold text-xl tracking-tight">Quest Up</span>
-          </div>
-          <div className="hidden md:flex space-x-2 text-sm font-medium">
-            <Link to="/dashboard" className="bg-white/10 px-4 py-1.5 rounded-full text-white">Dashboard</Link>
-            <div className="relative flex items-center">
-              <div className="flex items-center bg-white/5 border border-white/10 rounded-full px-3 py-1.5 ml-2">
-                <Search size={14} className="text-gray-400 mr-2" />
-                <input 
-                  type="text" 
-                  placeholder="Search users..." 
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="bg-transparent text-sm text-white placeholder:text-gray-500 focus:outline-none w-32 md:w-48 transition-all"
+      {/* Identity Modal Overlay */}
+      {!profile && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-[#121b24] p-8 rounded-2xl border border-primary/30 max-w-md w-full shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary to-transparent"></div>
+            <h2 className="text-2xl font-bold mb-2">Initialize Codex</h2>
+            <p className="text-gray-400 text-sm mb-6">Establish your identity before beginning your quests.</p>
+            <form onSubmit={handleSaveIdentity} className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-mono text-gray-400 uppercase tracking-wider">Display Name</label>
+                <input
+                  type="text"
+                  value={identityName}
+                  onChange={e => setIdentityName(e.target.value)}
+                  placeholder="e.g. Alistair Vance"
+                  className="w-full bg-[#0b1219] border border-white/10 rounded-lg py-3 px-4 text-white focus:outline-none focus:border-primary transition-colors text-sm"
+                  required
                 />
               </div>
-              
-              {/* Search Results Dropdown */}
-              {searchQuery.trim() && (
-                <div className="absolute top-full left-0 mt-2 w-full bg-[#121b24] border border-white/10 rounded-xl shadow-xl overflow-hidden z-50">
-                  {isSearching ? (
-                    <div className="p-3 text-xs text-gray-500 text-center">Searching...</div>
-                  ) : searchResults.length > 0 ? (
-                    <div className="flex flex-col">
-                      {searchResults.map(u => (
-                        <div key={u.id} className="flex items-center gap-3 p-3 hover:bg-white/5 transition-colors cursor-pointer border-b border-white/5 last:border-0">
-                          <img src={u.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.username}`} alt={u.username} className="w-8 h-8 rounded-full object-cover" />
-                          <div className="flex flex-col">
-                            <span className="text-sm font-bold leading-none">{u.display_name}</span>
-                            <span className="text-xs text-primary mt-1">@{u.username} • Lvl {u.level}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="p-3 text-xs text-gray-500 text-center">No users found</div>
-                  )}
-                </div>
-              )}
-            </div>
-            <a href="#" onClick={(e) => e.preventDefault()} className="text-gray-500 cursor-not-allowed px-4 py-1.5 flex items-center gap-2 transition-colors">
-              Stats 
-              <span className="bg-primary/20 text-primary text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border border-primary/20">Coming Soon</span>
-            </a>
-            <Link to="/profile" className="text-gray-400 hover:text-white px-4 py-1.5 transition-colors">Profile</Link>
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-mono text-gray-400 uppercase tracking-wider">Username</label>
+                <input
+                  type="text"
+                  value={identityUsername}
+                  onChange={e => setIdentityUsername(e.target.value)}
+                  placeholder="vance_the_scribe"
+                  className="w-full bg-[#0b1219] border border-white/10 rounded-lg py-3 px-4 text-white focus:outline-none focus:border-primary transition-colors text-sm"
+                  required
+                />
+              </div>
+              <button type="submit" className="w-full bg-primary text-black font-bold py-3 rounded-lg mt-4 hover:bg-primary/90 transition-colors">
+                Begin Journey
+              </button>
+            </form>
           </div>
         </div>
+      )}
 
+      {/* Navbar (Search removed, Auth removed) */}
+      <nav className="w-full px-6 py-4 flex justify-between items-center z-10 border-b border-white/5 bg-[#0b1219]">
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded bg-primary flex items-center justify-center text-black font-bold">Q</div>
+            <span className="font-bold text-lg tracking-wide">QuestUp</span>
+            <span className="text-xs text-gray-500 ml-2 hidden sm:inline-block border-l border-white/10 pl-2">GLACIER PROTOCOL</span>
+          </div>
+        </div>
         <div className="flex items-center gap-4">
           <button className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-white border border-white/10">
             <Bell size={14} />
           </button>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-gray-800 overflow-hidden border border-white/10">
-              <img src={profile.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.username}`} alt="Avatar" className="w-full h-full object-cover" />
+          {profile && (
+            <div className="px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgba(0,255,255,0.8)]"></div>
+              <span className="text-xs font-bold text-primary tracking-wide">Lv. {profile.level} {profile.display_name}</span>
             </div>
-            <div className="hidden md:block">
-              <div className="text-sm font-bold leading-none">{profile.display_name}</div>
-              <div className="text-xs text-primary mt-1">Lvl {profile.level} Adept</div>
-            </div>
-          </div>
+          )}
         </div>
       </nav>
 
-      <main className="w-full max-w-6xl px-6 mt-8">
+      {/* Main Content */}
+      <main className="flex-grow w-full max-w-6xl mx-auto px-6 mt-8 flex flex-col gap-6">
         
-        {/* User Header Card */}
-        <div className="w-full bg-[#121b24] p-6 rounded-2xl border border-white/5 flex flex-col md:flex-row justify-between items-center shadow-lg mb-10">
-          <div className="flex items-center gap-6 mb-4 md:mb-0">
-            <div className="w-20 h-20 rounded-full bg-black/40 border border-white/10 p-1">
-               <img src={profile.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.username}`} alt="Avatar" className="w-full h-full object-cover rounded-full" />
-            </div>
-            <div>
-              <div className="flex items-center gap-3 mb-2">
-                <h1 className="text-3xl font-bold">{profile.display_name}</h1>
-                <span className="bg-primary/20 text-primary text-xs px-2.5 py-1 rounded-full font-bold border border-primary/20">Level {profile.level}</span>
-              </div>
-              <div className="text-gray-400 text-sm flex items-center gap-3">
-                <span className="flex items-center gap-1.5 text-primary"><Target size={14} /> 12-Day Streak</span>
-                <span>/</span>
-                <span>{profile.total_xp.toLocaleString()} / {xpNeeded.toLocaleString()} XP</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="w-full md:w-1/3 flex flex-col gap-2">
-            <div className="flex justify-between text-xs font-mono text-gray-400 uppercase">
-              <span>Level {profile.level} Progress</span>
-              <span className="text-primary">{progressPercent}%</span>
-            </div>
-            <div className="w-full h-1.5 bg-black/50 rounded-full overflow-hidden">
-              <div className="h-full bg-primary transition-all duration-1000 ease-out" style={{ width: `${progressPercent}%` }}></div>
-            </div>
-            <div className="text-right text-xs text-gray-500 font-mono">
-              {(xpNeeded - profile.total_xp).toLocaleString()} XP to Level {profile.level + 1}
-            </div>
-          </div>
-        </div>
-
-        {/* Core Attributes */}
-        <div className="flex justify-between items-end mb-4">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-gray-400">Core Attributes</h3>
-          <button className="text-xs text-primary hover:underline">Attribute Details</button>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10">
-          {['Intellect', 'Strength', 'Discipline', 'Focus'].map(attrName => {
-            const attrData = attributes.find(a => a.attribute_name === attrName) || { level: 1, attribute_xp: 0 };
-            const attrIcons = { Intellect: Brain, Strength: Dumbbell, Discipline: ShieldCheck, Focus: Target };
-            const Icon = attrIcons[attrName] || Target;
-            const lvlProgress = Math.min(100, (attrData.attribute_xp / Math.floor(100 * Math.pow(attrData.level, 1.5))) * 100);
-
-            return (
-              <div key={attrName} className="bg-[#121b24] p-5 rounded-xl border border-white/5 flex flex-col justify-between">
-                <div className="flex justify-between items-start mb-4">
-                  <span className="text-sm font-medium text-gray-300">{attrName}</span>
-                  <Icon size={16} className="text-primary" />
-                </div>
-                <div className="flex justify-between items-end mb-3">
-                  <span className="text-3xl font-bold">Lvl {attrData.level}</span>
-                  <span className="text-xs text-green-400 font-mono">+{Math.floor(lvlProgress)}%</span>
-                </div>
-                <div className="w-full h-1 bg-black/50 rounded-full overflow-hidden">
-                  <div className="h-full bg-primary" style={{ width: `${lvlProgress}%` }}></div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Top Grid: Player Card & Add Quest */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
-          {/* Active Quests */}
-          <div className="lg:col-span-2">
-            <div className="flex justify-between items-end mb-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-gray-400">Active Quests</h3>
-              <span className="text-xs text-gray-500">{tasks.filter(t=>t.status==='completed').length} of {tasks.length} Completed</span>
-            </div>
-
-            <form onSubmit={handleAddTask} className="w-full bg-[#121b24] p-2 rounded-xl border border-white/5 mb-4 flex items-center gap-3">
-              <Plus size={18} className="text-gray-500 ml-2" />
-              <input 
-                type="text" 
-                placeholder="Add a new quest or objective..." 
-                value={newTaskTitle}
-                onChange={e=>setNewTaskTitle(e.target.value)}
-                className="flex-grow bg-transparent text-sm text-white placeholder:text-gray-500 focus:outline-none"
-              />
-              <select 
-                value={newTaskAttr} 
-                onChange={e=>setNewTaskAttr(e.target.value)}
-                className="bg-[#0b1219] text-xs text-gray-300 border border-white/10 rounded px-2 py-1.5 focus:outline-none"
-              >
-                <option value="Focus">Focus</option>
-                <option value="Intellect">Intellect</option>
-                <option value="Strength">Strength</option>
-                <option value="Discipline">Discipline</option>
-              </select>
-              <select 
-                value={newTaskDuration} 
-                onChange={e=>setNewTaskDuration(Number(e.target.value))}
-                className="bg-[#0b1219] text-xs text-gray-300 border border-white/10 rounded px-2 py-1.5 focus:outline-none"
-              >
-                <option value={1500}>25m</option>
-                <option value={2700}>45m</option>
-                <option value={300}>5m break</option>
-                <option value={60}>1m test</option>
-              </select>
-              <button type="submit" className="bg-white/10 hover:bg-white/20 text-xs px-4 py-1.5 rounded-lg transition-colors border border-white/5 text-gray-300">
-                Add Quest
-              </button>
-            </form>
-
-            <div className="flex flex-col gap-3">
-              {tasks.map(task => {
-                const isCompleted = task.status === 'completed';
-                const isRunning = task.status === 'in_progress';
-                
-                // Determine if we can check it
-                let canCheck = false;
-                let timeLeftText = `${Math.floor(task.timer_duration/60)}m`;
-                
-                if (isRunning) {
-                  const started = new Date(task.timer_started_at).getTime();
-                  const elapsed = Math.floor((Date.now() - started) / 1000);
-                  const rem = Math.max(0, task.timer_duration - elapsed);
-                  canCheck = rem === 0;
-                  if (rem > 0) timeLeftText = `${Math.ceil(rem/60)}m left`;
-                  else timeLeftText = `Ready to complete!`;
-                } else if (isCompleted) {
-                  timeLeftText = 'Completed';
-                }
-
-                return (
-                  <div key={task.id} className={`bg-[#121b24] p-4 rounded-xl border border-white/5 flex items-center justify-between ${isCompleted ? 'opacity-50' : ''}`}>
-                    <div className="flex items-center gap-4">
-                      {isCompleted ? (
-                        <CheckSquare size={20} className="text-primary cursor-not-allowed" />
-                      ) : (
-                        <button 
-                          disabled={!canCheck && isRunning} 
-                          onClick={() => canCheck && handleCompleteTask(task)}
-                          className={`${canCheck ? 'text-green-400 hover:text-green-300' : 'text-gray-600'} transition-colors`}
-                        >
-                          <Square size={20} />
-                        </button>
-                      )}
-                      
-                      <div>
-                        <div className={`text-sm font-medium ${isCompleted ? 'line-through text-gray-500' : 'text-gray-200'}`}>{task.title}</div>
-                        <div className="text-xs mt-1 flex items-center gap-2">
-                          <span className={`${isCompleted ? 'text-gray-600' : 'text-primary'}`}>{task.attribute_type}</span>
-                          <span className="text-gray-600">•</span>
-                          <span className="text-gray-400">+{Math.max(1, Math.round((task.timer_duration/60) * 0.5))} XP</span>
-                          <span className="text-gray-600">•</span>
-                          <span className={canCheck && !isCompleted ? 'text-green-400 font-bold' : 'text-gray-500'}>{timeLeftText}</span>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex items-center gap-2">
-                      {!isCompleted && !isRunning && (
-                        <button onClick={() => handleStartTask(task.id)} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-gray-400 border border-white/5">
-                          <Play size={14} />
-                        </button>
-                      )}
-                      {isRunning && !canCheck && (
-                        <div className="bg-primary/20 text-primary text-xs px-3 py-1.5 rounded-lg font-bold border border-primary/30">
-                          Running
-                        </div>
-                      )}
-                      {isCompleted && (
-                        <span className="text-green-400 text-xs font-mono font-bold">+{Math.max(1, Math.round((task.timer_duration/60) * 0.5))} XP</span>
-                      )}
-                      <button 
-                        onClick={() => handleDeleteTask(task.id)} 
-                        className="w-8 h-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 flex items-center justify-center text-red-400 border border-red-500/20 transition-colors ml-1"
-                        title="Delete Quest"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+          {/* Add Quest Card */}
+          <div className="lg:col-span-2 bg-[#121b24] p-6 rounded-2xl border border-white/5 relative overflow-hidden flex flex-col">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary to-transparent opacity-20"></div>
+            <h2 className="text-sm font-bold uppercase tracking-wider mb-6 flex items-center gap-2">
+              <Plus size={16} className="text-primary"/> Define New Quest
+            </h2>
+            <form onSubmit={handleAddTask} className="flex flex-col h-full gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Directive</label>
+                <input 
+                  type="text" 
+                  value={newTaskTitle}
+                  onChange={(e) => setNewTaskTitle(e.target.value)}
+                  placeholder="e.g. Complete Advanced System Architecture" 
+                  className="bg-[#0b1219] border border-white/10 rounded-lg py-3 px-4 text-white text-sm focus:border-primary focus:outline-none transition-colors w-full"
+                />
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Attribute Target</label>
+                  <div className="relative">
+                    <select 
+                      value={newTaskAttr}
+                      onChange={(e) => setNewTaskAttr(e.target.value)}
+                      className="w-full bg-[#0b1219] border border-white/10 rounded-lg py-3 px-4 text-white text-sm appearance-none focus:border-primary focus:outline-none transition-colors"
+                    >
+                      <option value="Focus">Focus</option>
+                      <option value="Intellect">Intellect</option>
+                      <option value="Strength">Strength</option>
+                      <option value="Discipline">Discipline</option>
+                    </select>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                      {getAttrIcon(newTaskAttr, 14)}
                     </div>
                   </div>
-                )
-              })}
-            </div>
-          </div>
+                </div>
 
-          {/* Focus Timer */}
-          <div>
-            <div className="flex justify-between items-end mb-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-gray-400">Focus Timer</h3>
-            </div>
-            
-            <div className="bg-[#121b24] p-8 rounded-2xl border border-white/5 flex flex-col items-center justify-center relative shadow-lg">
-              <div className="text-xs font-bold text-gray-500 uppercase tracking-[0.2em] mb-4">
-                {activeTask ? 'DEEP FOCUS SESSION' : 'IDLE'}
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Duration (Timer)</label>
+                  <select 
+                    value={newTaskDuration}
+                    onChange={(e) => setNewTaskDuration(Number(e.target.value))}
+                    className="w-full bg-[#0b1219] border border-white/10 rounded-lg py-3 px-4 text-white text-sm appearance-none focus:border-primary focus:outline-none transition-colors"
+                  >
+                    <option value={10}>10 Seconds (Demo)</option>
+                    <option value={25 * 60}>25 Minutes (Standard)</option>
+                    <option value={45 * 60}>45 Minutes (Deep Work)</option>
+                    <option value={90 * 60}>90 Minutes (Flow State)</option>
+                  </select>
+                </div>
               </div>
-              
-              <div className="text-7xl font-bold font-mono tracking-tighter mb-6">
-                {activeTask ? formatTime(remainingSeconds) : '25:00'}
-              </div>
-              
-              <div className="bg-white/5 border border-white/10 rounded-full px-4 py-1.5 flex items-center gap-2 mb-8">
-                <div className={`w-2 h-2 rounded-full ${activeTask ? 'bg-primary animate-pulse' : 'bg-gray-600'}`}></div>
-                <span className="text-xs text-gray-300 font-medium truncate max-w-[200px]">
-                  {activeTask ? `Working on: ${activeTask.title}` : 'No active quest'}
-                </span>
-              </div>
-              
-              <div className="flex items-center gap-3 w-full mt-4">
-                <button 
-                  disabled={!activeTask}
-                  onClick={() => activeTask && handleCancelTask(activeTask.id)}
-                  className="flex-grow bg-red-500/20 hover:bg-red-500/30 text-red-500 font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors border border-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <RotateCcw size={16} /> Abandon Quest
+
+              <div className="mt-auto pt-4 border-t border-white/5 flex justify-between items-center">
+                <div className="text-xs text-gray-500 font-mono">
+                  Reward: <span className="text-primary font-bold">{Math.round((newTaskDuration / 60) * 0.5)} XP</span>
+                </div>
+                <button type="submit" disabled={!profile} className="bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-bold uppercase tracking-wider py-2 px-6 rounded-md transition-colors disabled:opacity-50">
+                  Initialize Quest
                 </button>
               </div>
-            </div>
+            </form>
           </div>
 
+          {/* Profile Overview Card */}
+          {profile && (
+            <div className="bg-[#121b24] p-6 rounded-2xl border border-white/5 flex flex-col relative overflow-hidden">
+              <div className="absolute -bottom-12 -right-12 text-white/5 pointer-events-none">
+                <Target size={160} strokeWidth={1} />
+              </div>
+              <div className="flex items-center gap-4 mb-8 relative z-10">
+                <div className="w-16 h-16 rounded-xl bg-[#0b1219] border border-white/10 p-1">
+                  <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.username}`} alt="Avatar" className="w-full h-full rounded-lg object-cover" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg leading-tight">{profile.display_name}</h3>
+                  <div className="text-xs text-primary font-mono mt-1">LV. {profile.level} • {profile.total_xp} XP</div>
+                </div>
+              </div>
+              
+              <div className="flex flex-col gap-4 relative z-10 mt-auto">
+                {attributes.map(attr => (
+                  <div key={attr.attribute_name} className="flex justify-between items-center bg-[#0b1219] p-3 rounded-lg border border-white/5">
+                    <div className="flex items-center gap-3">
+                      <div className="w-6 h-6 rounded bg-white/5 flex items-center justify-center">
+                        {getAttrIcon(attr.attribute_name, 12)}
+                      </div>
+                      <span className="text-xs font-bold uppercase tracking-wider">{attr.attribute_name}</span>
+                    </div>
+                    <span className="text-xs font-mono text-gray-400">Lv. {attr.level}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Active Quest Section */}
+        {activeTask && (
+          <div className="w-full bg-[#121b24] rounded-2xl border border-primary/30 p-1 relative overflow-hidden mt-2">
+            <div className="absolute top-0 left-0 h-full bg-primary/10 transition-all duration-1000 ease-linear" 
+                 style={{ width: `${((activeTask.timer_duration - remainingSeconds) / activeTask.timer_duration) * 100}%` }}></div>
+            
+            <div className="bg-[#0b1219] rounded-xl p-6 relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex items-center gap-4 w-full md:w-auto">
+                <div className="w-12 h-12 rounded-full border border-primary/50 flex items-center justify-center animate-pulse shadow-[0_0_15px_rgba(0,255,255,0.2)]">
+                  {getAttrIcon(activeTask.attribute_type, 24)}
+                </div>
+                <div>
+                  <div className="text-[10px] font-mono text-primary uppercase tracking-widest mb-1">Active Quest Protocol</div>
+                  <h2 className="text-lg font-bold">{activeTask.title}</h2>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
+                <div className="text-4xl font-light tracking-tighter tabular-nums">
+                  {formatTime(remainingSeconds)}
+                </div>
+                
+                <div className="flex gap-2">
+                  <button onClick={() => handleCancelTask(activeTask.id)} className="w-10 h-10 rounded-full border border-white/10 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 flex items-center justify-center transition-colors">
+                    <RotateCcw size={16} />
+                  </button>
+                  {remainingSeconds === 0 ? (
+                    <button onClick={() => handleCompleteTask(activeTask)} className="px-6 h-10 rounded-full bg-primary text-black font-bold text-sm uppercase tracking-wider hover:bg-primary/90 transition-colors shadow-[0_0_20px_rgba(0,255,255,0.3)]">
+                      Complete
+                    </button>
+                  ) : (
+                    <button disabled className="px-6 h-10 rounded-full bg-white/5 border border-white/10 text-gray-500 font-bold text-sm uppercase tracking-wider cursor-not-allowed">
+                      In Progress
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Task List */}
+        <div className="mt-2">
+          <h2 className="text-xs font-mono text-gray-500 uppercase tracking-widest mb-4">Quest Log</h2>
+          <div className="flex flex-col gap-3">
+            {tasks.filter(t => t.status !== 'in_progress').map(task => (
+              <div key={task.id} className={`w-full p-4 rounded-xl border flex items-center justify-between ${
+                task.status === 'completed' ? 'bg-[#0b1219] border-white/5 opacity-60' : 'bg-[#121b24] border-white/10 hover:border-white/20'
+              } transition-colors`}>
+                
+                <div className="flex items-center gap-4">
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center border ${
+                    task.status === 'completed' ? 'bg-primary/5 border-primary/20' : 'bg-[#0b1219] border-white/10'
+                  }`}>
+                    {task.status === 'completed' ? <CheckSquare size={18} className="text-primary"/> : getAttrIcon(task.attribute_type, 18)}
+                  </div>
+                  
+                  <div className="flex flex-col">
+                    <span className={`font-medium ${task.status === 'completed' ? 'line-through text-gray-500' : 'text-white'}`}>
+                      {task.title}
+                    </span>
+                    <span className="text-[10px] font-mono text-gray-500 uppercase tracking-wider mt-1">
+                      {task.attribute_type} • {task.timer_duration / 60} Min
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {task.status === 'pending' && (
+                    <>
+                      <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors">
+                        <Trash2 size={16} />
+                      </button>
+                      <button onClick={() => handleStartTask(task.id)} className="w-10 h-10 rounded-full border border-white/10 hover:bg-primary hover:text-black flex items-center justify-center transition-all disabled:opacity-50" disabled={activeTask !== null}>
+                        <Play size={14} className="ml-1" />
+                      </button>
+                    </>
+                  )}
+                  {task.status === 'completed' && (
+                    <span className="text-[10px] font-bold text-primary border border-primary/20 bg-primary/10 px-2 py-1 rounded uppercase tracking-wider">
+                      +{Math.round((task.timer_duration / 60) * 0.5)} XP
+                    </span>
+                  )}
+                </div>
+
+              </div>
+            ))}
+            {tasks.length === 0 && (
+              <div className="w-full p-8 rounded-xl border border-dashed border-white/10 text-center flex flex-col items-center justify-center text-gray-500">
+                <Square size={24} className="mb-3 opacity-20" />
+                <p className="text-sm">Your quest log is empty.</p>
+                <p className="text-xs font-mono mt-1">Define a new directive above.</p>
+              </div>
+            )}
+          </div>
         </div>
       </main>
     </div>
